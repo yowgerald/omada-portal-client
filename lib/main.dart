@@ -6,9 +6,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 
+import 'env/env.dart';
+
 void main() {
   HttpOverrides.global = MyHttpOverrides();
-  runApp(RemainingTimeApp());
+  runApp(const RemainingTimeApp());
 }
 
 class MyHttpOverrides extends HttpOverrides {
@@ -21,6 +23,8 @@ class MyHttpOverrides extends HttpOverrides {
 }
 
 class RemainingTimeApp extends StatelessWidget {
+  const RemainingTimeApp({super.key});
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -28,60 +32,116 @@ class RemainingTimeApp extends StatelessWidget {
       theme: ThemeData(
         primarySwatch: Colors.blue,
       ),
-      home: RemainingTimeScreen(),
+      home: const RemainingTimeScreen(),
     );
   }
 }
 
 class RemainingTimeScreen extends StatefulWidget {
+  const RemainingTimeScreen({super.key});
+
   @override
   _RemainingTimeScreenState createState() => _RemainingTimeScreenState();
 }
 
 class _RemainingTimeScreenState extends State<RemainingTimeScreen> {
   static const platform = MethodChannel('com.example.toto_portal/device_info');
-  String macAddress = "Unknown";
-  int remainingSeconds = 0;
-  bool isLoading = true; // Flag to determine loading state
+
+  // AUTH CONSTANTS
+  final _username = Env.username;
+  final _password = Env.password;
+  String? _token;
+  Map<String, String>? _cookies;
+
+  // APP CONSTANTS
+  String _macAddress = "Unknown";
+  int _remainingSeconds = 0;
+  bool _isLoading = true;
   Timer? _timer;
+
+  // URLS AND IDS
+  final String _controllerId = Env.controllerId;
+  final String _siteId = Env.siteId;
+  final String _omadaUrl = Env.omadaUrl;
 
   @override
   void initState() {
     super.initState();
-    getMacAddress();
+    _getMacAddress();
   }
 
   @override
   void dispose() {
-    _timer?.cancel(); // Cancel the timer when the widget is disposed
+    _timer?.cancel();
     super.dispose();
   }
 
-  Future<void> getMacAddress() async {
+  Future<void> _getMacAddress() async {
     try {
       final String result = await platform.invokeMethod('getMacAddress');
       setState(() {
-        macAddress = result;
+        _macAddress = result;
       });
-      await fetchRemainingTime(macAddress);
-      startCountdown();
+      await _loginAndFetchToken();
+      await _fetchRemainingTime(_macAddress);
+      _startCountdown();
     } on PlatformException catch (e) {
       print("Failed to get MAC address: '${e.message}'.");
     }
   }
 
-  Future<void> fetchRemainingTime(String macAddress) async {
-    final url = 'https://192.168.0.107:3000/get_client?mac_id=$macAddress';
+  Future<void> _loginAndFetchToken() async {
+    final String loginUrl = '$_omadaUrl/$_controllerId/api/v2/login';
 
     try {
-      final response = await http.get(Uri.parse(url));
-      print(url);
+      final response = await http.post(
+        Uri.parse(loginUrl),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'username': _username,
+          'password': _password,
+        }),
+      );
+
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         setState(() {
-          remainingSeconds = parseRemainingTime(
+          _token = data['result']['token'];
+        });
+
+        final cookieHeader = response.headers['set-cookie'];
+        if (cookieHeader != null) {
+          _cookies = {'Cookie': cookieHeader}; // Store cookies
+        }
+      } else {
+        print('Login failed with status: ${response.statusCode}');
+      }
+    } catch (e) {
+      print('Error during login: $e');
+    }
+  }
+
+  Future<void> _fetchRemainingTime(String macAddress) async {
+    final String clientUrl =
+        '$_omadaUrl/$_controllerId/api/v2/hotspot/sites/$_siteId/clients?searchKey=$macAddress&sorts.end=desc&token=$_token&currentPage=1&currentPageSize=1';
+
+    try {
+      final response = await http.get(
+        Uri.parse(clientUrl),
+        headers: {
+          'Content-Type': 'application/json',
+          'Csrf-Token': _token ?? '',
+          if (_cookies != null) ..._cookies!,
+        },
+      );
+      print(response.body);
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        setState(() {
+          _remainingSeconds = _parseRemainingTime(
               data['remaining_time'] ?? "0 days 0 hours 0 minutes 0 seconds");
-          isLoading = false; // Set loading to false after data is fetched
+          _isLoading = false;
         });
       } else {
         print(
@@ -90,12 +150,12 @@ class _RemainingTimeScreenState extends State<RemainingTimeScreen> {
     } catch (e) {
       print('Error: $e');
       setState(() {
-        isLoading = false; // Set loading to false even if there is an error
+        _isLoading = false;
       });
     }
   }
 
-  int parseRemainingTime(String timeStr) {
+  int _parseRemainingTime(String timeStr) {
     final regex = RegExp(r'(\d+) days (\d+) hours (\d+) minutes (\d+) seconds');
     final match = regex.firstMatch(timeStr);
 
@@ -109,21 +169,21 @@ class _RemainingTimeScreenState extends State<RemainingTimeScreen> {
     return 0;
   }
 
-  void startCountdown() {
-    _timer?.cancel(); // Cancel any existing timer
+  void _startCountdown() {
+    _timer?.cancel();
 
-    _timer = Timer.periodic(Duration(seconds: 1), (timer) {
-      if (remainingSeconds > 0) {
+    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (_remainingSeconds > 0) {
         setState(() {
-          remainingSeconds--;
+          _remainingSeconds--;
         });
       } else {
-        timer.cancel(); // Stop the timer when countdown finishes
+        timer.cancel();
       }
     });
   }
 
-  String formatTime(int seconds) {
+  String _formatTime(int seconds) {
     final minutes = (seconds / 60).floor();
     final hours = (minutes / 60).floor();
     final days = (hours / 24).floor();
@@ -139,28 +199,29 @@ class _RemainingTimeScreenState extends State<RemainingTimeScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('Remaining Time'),
+        title: const Text('Remaining Time'),
       ),
       body: Center(
         child: Padding(
           padding: const EdgeInsets.all(16.0),
-          child: isLoading
-              ? Text(
+          child: _isLoading
+              ? const Text(
                   'Loading...',
                   style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
                 )
               : Text(
-                  remainingSeconds > 0
-                      ? formatTime(remainingSeconds)
+                  _remainingSeconds > 0
+                      ? _formatTime(_remainingSeconds)
                       : "Time's up!",
-                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+                  style: const TextStyle(
+                      fontSize: 24, fontWeight: FontWeight.bold),
                 ),
         ),
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: () => fetchRemainingTime(macAddress),
+        onPressed: () => _fetchRemainingTime(_macAddress),
         tooltip: 'Refresh',
-        child: Icon(Icons.refresh),
+        child: const Icon(Icons.refresh),
       ),
     );
   }
