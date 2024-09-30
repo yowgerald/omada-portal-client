@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:network_info_plus/network_info_plus.dart';
+import 'package:flutter_emoji/flutter_emoji.dart';
 import '../env/env.dart';
 
 class RemainingTimeScreen extends StatefulWidget {
@@ -180,25 +181,50 @@ class _RemainingTimeScreenState extends State<RemainingTimeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    var parser = EmojiParser();
+    String constructionMessage = parser
+        .emojify(':construction: This is under construction :construction:');
     return Scaffold(
       appBar: AppBar(
         title: const Text('Remaining Time'),
       ),
-      body: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: isLoading
-              ? const Text(
-                  'Loading...',
-                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-                )
-              : Text(
-                  remainingSeconds > 0
-                      ? formatTime(remainingSeconds)
-                      : "Time's up!",
-                  style: const TextStyle(
-                      fontSize: 24, fontWeight: FontWeight.bold),
-                ),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            // Expanded widget to center the remaining time text
+            Expanded(
+              child: Center(
+                child: isLoading
+                    ? const Text(
+                        'Loading...',
+                        style: TextStyle(
+                            fontSize: 24, fontWeight: FontWeight.bold),
+                      )
+                    : Text(
+                        remainingSeconds > 0
+                            ? formatTime(remainingSeconds)
+                            : "Time's up!",
+                        style: const TextStyle(
+                            fontSize: 24, fontWeight: FontWeight.bold),
+                      ),
+              ),
+            ),
+            // Adding "Under Construction" message with bottom padding
+            Padding(
+              padding:
+                  const EdgeInsets.only(bottom: 80.0), // Extra bottom padding
+              child: Text(
+                constructionMessage,
+                style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.orange),
+              ),
+            ),
+          ],
         ),
       ),
       floatingActionButton: FloatingActionButton(
