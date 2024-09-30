@@ -52,7 +52,6 @@ class _RemainingTimeScreenState extends State<RemainingTimeScreen> {
       });
       await _loginAndFetchToken();
       await _fetchRemainingTime(_macAddress);
-      _startCountdown();
     } on PlatformException catch (e) {
       print("Failed to get MAC address: '${e.message}'.");
     }
@@ -102,18 +101,39 @@ class _RemainingTimeScreenState extends State<RemainingTimeScreen> {
           if (_cookies != null) ..._cookies!,
         },
       );
-      print(response.body);
 
       if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        setState(() {
-          _remainingSeconds = _parseRemainingTime(
-              data['remaining_time'] ?? "0 days 0 hours 0 minutes 0 seconds");
-          _isLoading = false;
-        });
+        Map<String, dynamic> parsedData = jsonDecode(response.body);
+        // Access the 'end' timestamp
+        int endTimestamp = parsedData['result']['data'][0]['end'];
+
+        // Get the current time in milliseconds (Unix timestamp)
+        int currentTimestamp = DateTime.now().millisecondsSinceEpoch;
+
+        // Calculate remaining time in milliseconds
+        int remainingTimeMillis = endTimestamp - currentTimestamp;
+
+        if (remainingTimeMillis < 0) {
+          print("Time's up!");
+          setState(() {
+            _remainingSeconds = 0;
+            _isLoading = false;
+          });
+        } else {
+          // Convert remaining time to seconds
+          int remainingSeconds = remainingTimeMillis ~/ 1000;
+          setState(() {
+            _remainingSeconds = remainingSeconds;
+            _isLoading = false;
+          });
+          _startCountdown(); // Start the countdown here after setting the time
+        }
       } else {
         print(
             'Failed to load remaining time, status code: ${response.statusCode}');
+        setState(() {
+          _isLoading = false;
+        });
       }
     } catch (e) {
       print('Error: $e');
@@ -124,7 +144,7 @@ class _RemainingTimeScreenState extends State<RemainingTimeScreen> {
   }
 
   void _startCountdown() {
-    _timer?.cancel();
+    _timer?.cancel(); // Cancel any existing timers
 
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (_remainingSeconds > 0) {
@@ -133,6 +153,7 @@ class _RemainingTimeScreenState extends State<RemainingTimeScreen> {
         });
       } else {
         timer.cancel();
+        print("Countdown finished.");
       }
     });
   }
@@ -167,20 +188,6 @@ class _RemainingTimeScreenState extends State<RemainingTimeScreen> {
       ),
     );
   }
-}
-
-int _parseRemainingTime(String timeStr) {
-  final regex = RegExp(r'(\d+) days (\d+) hours (\d+) minutes (\d+) seconds');
-  final match = regex.firstMatch(timeStr);
-
-  if (match != null) {
-    final days = int.parse(match.group(1) ?? '0');
-    final hours = int.parse(match.group(2) ?? '0');
-    final minutes = int.parse(match.group(3) ?? '0');
-    final seconds = int.parse(match.group(4) ?? '0');
-    return days * 86400 + hours * 3600 + minutes * 60 + seconds;
-  }
-  return 0;
 }
 
 String _formatTime(int seconds) {
