@@ -91,7 +91,6 @@ class _RemainingTimeScreenState extends State<RemainingTimeScreen> {
   }
 
   Future<void> fetchRemainingTime(String mac) async {
-    mac = "02:00:00:00:00:00";
     if (mac == "02:00:00:00:00:00") {
       final info = NetworkInfo();
       final wifiIp = await info.getWifiIP() ?? "";
