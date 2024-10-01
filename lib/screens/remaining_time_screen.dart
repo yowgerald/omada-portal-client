@@ -17,45 +17,104 @@ class RemainingTimeScreen extends StatefulWidget {
 class _RemainingTimeScreenState extends State<RemainingTimeScreen> {
   static const platform = MethodChannel('com.example.toto_portal/device_info');
 
-  // AUTH CONSTANTS
   final String username = Env.username;
   final String password = Env.password;
   String? authToken;
   Map<String, String>? cookies;
 
-  // APP CONSTANTS
   String macAddress = "Unknown";
   int remainingSeconds = 0;
   bool isLoading = true;
   Timer? countdownTimer;
 
-  // URLS AND IDS
   final String controllerId = Env.controllerId;
   final String siteId = Env.siteId;
   final String omadaUrl = Env.omadaUrl;
 
+  DateTime? lastRequestTime;
+  final int requestCooldown = 8000; // 8 seconds cooldown
+  int cooldownRemainingSeconds = 0; // Track remaining cooldown time
+  Timer? cooldownTimer;
+
   @override
   void initState() {
     super.initState();
-    retrieveMacAddress();
+    loadRemainingTime();
   }
 
   @override
   void dispose() {
     countdownTimer?.cancel();
+    cooldownTimer?.cancel();
     super.dispose();
   }
 
-  Future<void> retrieveMacAddress() async {
+  bool canMakeRequest() {
+    if (lastRequestTime == null) return true;
+    final timeSinceLastRequest =
+        DateTime.now().difference(lastRequestTime!).inMilliseconds;
+    return timeSinceLastRequest > requestCooldown;
+  }
+
+  void startCooldownTimer() {
+    setState(() {
+      cooldownRemainingSeconds = requestCooldown ~/ 1000; // Convert to seconds
+    });
+
+    cooldownTimer?.cancel();
+    cooldownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (cooldownRemainingSeconds > 0) {
+        setState(() {
+          cooldownRemainingSeconds--;
+        });
+      } else {
+        timer.cancel();
+      }
+    });
+  }
+
+  Future<void> loadRemainingTime() async {
+    if (!canMakeRequest()) {
+      print('Request throttled to avoid server exhaustion.');
+      return;
+    }
+
+    // Update the last request time and start cooldown timer
+    lastRequestTime = DateTime.now();
+    startCooldownTimer();
+
+    // Reset states
+    setState(() {
+      remainingSeconds = 0;
+      isLoading = true;
+    });
+
+    // Cancel any existing countdown timer
+    countdownTimer?.cancel();
+
     try {
       final String result = await platform.invokeMethod('getMacAddress');
       setState(() {
         macAddress = result;
       });
+      if (macAddress.isEmpty) {
+        print('No Mac Address found.');
+        return;
+      }
+
       await loginAndFetchToken();
-      await fetchRemainingTime(macAddress);
+      if (authToken == null || cookies == null) {
+        print('Cannot Login!');
+        return;
+      }
+
+      await fetchClientData(macAddress);
+      print('Loaded.');
     } on PlatformException catch (e) {
       print("Failed to get MAC address: '${e.message}'.");
+      setState(() {
+        isLoading = false;
+      });
     }
   }
 
@@ -72,28 +131,33 @@ class _RemainingTimeScreenState extends State<RemainingTimeScreen> {
         }),
       );
 
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        setState(() {
-          authToken = data['result']['token'];
-        });
-
-        final cookieHeader = response.headers['set-cookie'];
-        if (cookieHeader != null) {
-          cookies = {'Cookie': cookieHeader}; // Store cookies
-        }
-      } else {
+      if (response.statusCode != 200) {
         print('Login failed with status: ${response.statusCode}');
+        return;
+      }
+
+      final data = jsonDecode(response.body);
+      setState(() {
+        authToken = data['result']['token'];
+      });
+
+      final cookieHeader = response.headers['set-cookie'];
+      if (cookieHeader != null) {
+        cookies = {'Cookie': cookieHeader};
       }
     } catch (e) {
       print('Error during login: $e');
     }
   }
 
-  Future<void> fetchRemainingTime(String mac) async {
+  Future<void> fetchClientData(String mac) async {
     if (mac == "02:00:00:00:00:00") {
       final info = NetworkInfo();
       final wifiIp = await info.getWifiIP() ?? "";
+      if (wifiIp.isEmpty) {
+        print('No WiFi IP found.');
+        return;
+      }
       final String clientUrl =
           '$omadaUrl/$controllerId/api/v2/sites/$siteId/clients?&token=$authToken&searchKey=$wifiIp&sorts.end=desc&filters.active=true&currentPage=1&currentPageSize=1';
       final response = await http.get(
@@ -105,15 +169,16 @@ class _RemainingTimeScreenState extends State<RemainingTimeScreen> {
         },
       );
 
-      if (response.statusCode == 200) {
-        Map<String, dynamic> parsedData = jsonDecode(response.body);
-        mac = parsedData['result']['data'][0]['mac'];
+      if (response.statusCode != 200) {
+        return;
       }
+      Map<String, dynamic> parsedData = jsonDecode(response.body);
+      mac = parsedData['result']['data'][0]['mac'];
     }
-    await fetchClientTime(mac);
+    await fetchRemainingTime(mac);
   }
 
-  Future<void> fetchClientTime(String mac) async {
+  Future<void> fetchRemainingTime(String mac) async {
     final String clientUrl =
         '$omadaUrl/$controllerId/api/v2/hotspot/sites/$siteId/clients?searchKey=$mac&sorts.end=desc&token=$authToken&currentPage=1&currentPageSize=1';
 
@@ -127,33 +192,34 @@ class _RemainingTimeScreenState extends State<RemainingTimeScreen> {
         },
       );
 
-      if (response.statusCode == 200) {
-        Map<String, dynamic> parsedData = jsonDecode(response.body);
-        int endTimestamp = parsedData['result']['data'][0]['end'];
-        int currentTimestamp = DateTime.now().millisecondsSinceEpoch;
-
-        int remainingTimeMillis = endTimestamp - currentTimestamp;
-
-        if (remainingTimeMillis < 0) {
-          print("Time's up!");
-          setState(() {
-            remainingSeconds = 0;
-            isLoading = false;
-          });
-        } else {
-          int seconds = remainingTimeMillis ~/ 1000;
-          setState(() {
-            remainingSeconds = seconds;
-            isLoading = false;
-          });
-          startCountdown();
-        }
-      } else {
+      if (response.statusCode != 200) {
         print(
             'Failed to load remaining time, status code: ${response.statusCode}');
         setState(() {
           isLoading = false;
         });
+        return;
+      }
+
+      Map<String, dynamic> parsedData = jsonDecode(response.body);
+      int endTimestamp = parsedData['result']['data'][0]['end'];
+      int currentTimestamp = DateTime.now().millisecondsSinceEpoch;
+
+      int remainingTimeMillis = endTimestamp - currentTimestamp;
+
+      if (remainingTimeMillis < 0) {
+        print("Time's up!");
+        setState(() {
+          remainingSeconds = 0;
+          isLoading = false;
+        });
+      } else {
+        int seconds = remainingTimeMillis ~/ 1000;
+        setState(() {
+          remainingSeconds = seconds;
+          isLoading = false;
+        });
+        startCountdown();
       }
     } catch (e) {
       print('Error: $e');
@@ -181,8 +247,8 @@ class _RemainingTimeScreenState extends State<RemainingTimeScreen> {
   @override
   Widget build(BuildContext context) {
     var parser = EmojiParser();
-    String constructionMessage = parser
-        .emojify(':construction: This is under construction :construction:');
+    String constructionMessage =
+        parser.emojify(':construction: Under construction :construction:');
     return Scaffold(
       appBar: AppBar(
         title: const Text('Remaining Time'),
@@ -211,7 +277,20 @@ class _RemainingTimeScreenState extends State<RemainingTimeScreen> {
                       ),
               ),
             ),
-            // Adding "Under Construction" message with bottom padding
+            // Show wait message during cooldown
+            if (cooldownRemainingSeconds > 0)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 16.0),
+                child: Text(
+                  'Please Wait $cooldownRemainingSeconds seconds to refresh again.',
+                  style: const TextStyle(
+                    fontSize: 16,
+                    color: Colors.redAccent,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            // Adding "Under Construction" message
             Padding(
               padding:
                   const EdgeInsets.only(bottom: 80.0), // Extra bottom padding
@@ -227,9 +306,10 @@ class _RemainingTimeScreenState extends State<RemainingTimeScreen> {
         ),
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: () => fetchRemainingTime(macAddress),
+        onPressed: cooldownRemainingSeconds > 0 ? null : loadRemainingTime,
         tooltip: 'Refresh',
         child: const Icon(Icons.refresh),
+        backgroundColor: cooldownRemainingSeconds > 0 ? Colors.grey : null,
       ),
     );
   }
